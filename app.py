@@ -5,7 +5,6 @@ import json
 import re
 import uuid
 import io
-import zipfile
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
@@ -69,20 +68,17 @@ def clean_dataframe(df, title_case_columns=None):
     original_rows = len(df)
     original_cols = list(df.columns)
 
-    # 1. Snake case columns
     new_cols = [to_snake_case(c) for c in df.columns]
     renamed = {old: new for old, new in zip(df.columns, new_cols) if old != new}
     df.columns = new_cols
     if renamed:
         log("Renamed columns to snake_case", detail=str(renamed))
 
-    # 2. Remove empty rows
     before = len(df)
     df = df.replace(r"^\s*$", pd.NA, regex=True)
     df = df.dropna(how="all")
     log("Removed fully empty rows", delta=before - len(df))
 
-    # 3. Strip whitespace
     stripped_count = 0
     for col in df.columns:
         original = df[col].copy()
@@ -90,7 +86,6 @@ def clean_dataframe(df, title_case_columns=None):
         stripped_count += (original != df[col]).sum()
     log("Stripped leading/trailing whitespace", detail=f"{stripped_count} cells affected")
 
-    # 4. Collapse internal whitespace
     collapsed_count = 0
     for col in df.columns:
         original = df[col].copy()
@@ -98,15 +93,13 @@ def clean_dataframe(df, title_case_columns=None):
         collapsed_count += (original != df[col]).sum()
     log("Collapsed internal whitespace", detail=f"{collapsed_count} cells affected")
 
-    # 5. Nullish strings
     nullish_count = 0
     for col in df.columns:
         mask = df[col].astype(str).str.lower().str.strip().isin(NULL_STRINGS)
         nullish_count += mask.sum()
         df.loc[mask, col] = pd.NA
-    log("Replaced nullish strings (N/A, none, null…) with empty", detail=f"{nullish_count} cells affected")
+    log("Replaced nullish strings (N/A, none, null\u2026) with empty", detail=f"{nullish_count} cells affected")
 
-    # 5b. Lowercase emails
     email_cols = [col for col in df.columns if "email" in col or "e_mail" in col]
     email_lowered = 0
     for col in email_cols:
@@ -116,14 +109,40 @@ def clean_dataframe(df, title_case_columns=None):
     if email_cols:
         log("Lowercased email columns", detail=f"columns: {email_cols}, {email_lowered} cells affected")
 
-    # 6. Deduplicate (case-insensitive)
     before = len(df)
     df_norm = df.fillna("").astype(str).apply(lambda col: col.str.lower().str.strip())
     duplicate_mask = df_norm.duplicated()
     df = df[~duplicate_mask]
     log("Removed duplicate rows (case-insensitive)", delta=before - len(df))
 
-    # 7. Numeric coercion
+    # Remove "blank-dominant" duplicates: rows that match another row on all
+    # populated fields but have MORE blanks — they add no information.
+    df = df.reset_index(drop=True)
+    to_drop = set()
+    df_str = df.fillna("").astype(str).apply(lambda c: c.str.lower().str.strip())
+
+    for i in range(len(df)):
+        if i in to_drop:
+            continue
+        for j in range(i + 1, len(df)):
+            if j in to_drop:
+                continue
+            row_i = df_str.iloc[i]
+            row_j = df_str.iloc[j]
+            both_filled = (row_i != "") & (row_j != "")
+            if both_filled.any() and (row_i[both_filled] == row_j[both_filled]).all():
+                blanks_i = (row_i == "").sum()
+                blanks_j = (row_j == "").sum()
+                if blanks_i > blanks_j:
+                    to_drop.add(i)
+                elif blanks_j > blanks_i:
+                    to_drop.add(j)
+
+    if to_drop:
+        df = df.drop(index=list(to_drop)).reset_index(drop=True)
+        log("Removed blank-dominant duplicates (same entity, fewer data points)",
+            delta=len(to_drop))
+
     numeric_converted = []
     for col in df.columns:
         non_null = df[col].dropna()
@@ -133,14 +152,13 @@ def clean_dataframe(df, title_case_columns=None):
         if digit_ratio > 0.7:
             converted, success = try_numeric(df[col])
             if success:
-                if converted.dropna().apply(float.is_integer).all():
+                if converted.dropna().apply(lambda x: float(x).is_integer()).all():
                     converted = converted.astype("Int64")
                 df[col] = converted
                 numeric_converted.append(col)
     if numeric_converted:
         log("Coerced columns to numeric (stripped $, %, ,)", detail=str(numeric_converted))
 
-    # 8. Title case
     if title_case_columns is not None:
         if len(title_case_columns) == 0:
             title_case_columns = [
@@ -206,39 +224,48 @@ def clean():
     except Exception as e:
         return jsonify({"error": f"Cleaning failed: {str(e)}"}), 500
 
-    # Build zip with cleaned file + report
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        # Cleaned CSV
-        csv_buffer = io.StringIO()
-        cleaned_df.to_csv(csv_buffer, index=False)
-        zf.writestr("cleaned_" + filename.rsplit(".", 1)[0] + ".csv", csv_buffer.getvalue())
-        # Report JSON
-        zf.writestr("cleaning_report.json", json.dumps(report, indent=4))
+    # Store files individually — no zip
+    csv_buffer = io.StringIO()
+    cleaned_df.to_csv(csv_buffer, index=False)
+    clean_filename = "cleaned_" + filename.rsplit(".", 1)[0] + ".csv"
 
-    zip_buffer.seek(0)
-
-    report["zip_available"] = True
     session_id = str(uuid.uuid4())
-
-    # Store zip temporarily in memory via a simple global dict
-    app.config.setdefault("ZIPS", {})[session_id] = zip_buffer.read()
+    store = app.config.setdefault("FILES", {})
+    store[session_id] = {
+        "csv": csv_buffer.getvalue().encode("utf-8"),
+        "csv_filename": clean_filename,
+        "json": json.dumps(report, indent=4).encode("utf-8"),
+    }
 
     report["session_id"] = session_id
     return jsonify(report)
 
 
-@app.route("/download/<session_id>")
-def download(session_id):
-    zips = app.config.get("ZIPS", {})
-    if session_id not in zips:
+@app.route("/download/<session_id>/csv")
+def download_csv(session_id):
+    store = app.config.get("FILES", {})
+    if session_id not in store:
         return "File not found or expired", 404
-    data = zips[session_id]
+    f = store[session_id]
     return send_file(
-        io.BytesIO(data),
-        mimetype="application/zip",
+        io.BytesIO(f["csv"]),
+        mimetype="text/csv",
         as_attachment=True,
-        download_name="cleaned_data.zip"
+        download_name=f["csv_filename"]
+    )
+
+
+@app.route("/download/<session_id>/report")
+def download_report(session_id):
+    store = app.config.get("FILES", {})
+    if session_id not in store:
+        return "File not found or expired", 404
+    f = store[session_id]
+    return send_file(
+        io.BytesIO(f["json"]),
+        mimetype="application/json",
+        as_attachment=True,
+        download_name="cleaning_report.json"
     )
 
 

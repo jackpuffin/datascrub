@@ -539,8 +539,9 @@
       <div id="actionsList"></div>
     </div>
 
-    <button class="btn" id="downloadBtn">⬇ Download Cleaned File + Report</button>
-    <button class="btn btn-secondary" id="resetBtn">Clean Another File</button>
+    <button class="btn" id="downloadCsvBtn">⬇ Download Cleaned CSV</button>
+    <button class="btn btn-secondary" id="downloadReportBtn">⬇ Report (JSON)</button>
+    <button class="btn btn-secondary" id="resetBtn" style="margin-top:12px">Clean Another File</button>
   </section>
 
 </div>
@@ -559,7 +560,8 @@
   const btnText    = document.getElementById('btnText');
   const errorBox   = document.getElementById('errorBox');
   const results    = document.getElementById('results');
-  const downloadBtn= document.getElementById('downloadBtn');
+  const downloadCsvBtn = document.getElementById('downloadCsvBtn');
+  const downloadReportBtn = document.getElementById('downloadReportBtn');
   const resetBtn   = document.getElementById('resetBtn');
 
   let currentFile = null;
@@ -689,9 +691,16 @@
   }
 
   // Download
-  downloadBtn.addEventListener('click', () => {
+  downloadCsvBtn.addEventListener('click', () => {
     if (currentSessionId) {
-      window.location.href = '/download/' + currentSessionId;
+      window.location.href = '/download/' + currentSessionId + '/csv';
+    }
+  });
+
+  // Report download
+  downloadReportBtn.addEventListener('click', () => {
+    if (currentSessionId) {
+      window.location.href = '/download/' + currentSessionId + '/report';
     }
   });
 
