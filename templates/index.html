@@ -539,9 +539,20 @@
       <div id="actionsList"></div>
     </div>
 
+    <div style="margin-top:24px; padding:16px 20px; border:1px solid #1a2a1a; border-radius:4px; background:#0d150d;">
+      <p style="font-family:var(--mono); font-size:11px; color:#558855; line-height:1.7; margin:0;">
+        <span style="color:var(--accent)">// Note:</span> This tool applies standard cleaning rules automatically. 
+        Duplicate detection is based on matching cell values — in datasets with recurring transactions, 
+        review the audit log before using output in production. 
+        All changes are logged above so nothing happens silently.
+      </p>
+    </div>
+
+    <div style="margin-top:20px;">
     <button class="btn" id="downloadCsvBtn">⬇ Download Cleaned CSV</button>
     <button class="btn btn-secondary" id="downloadReportBtn">⬇ Report (JSON)</button>
     <button class="btn btn-secondary" id="resetBtn" style="margin-top:12px">Clean Another File</button>
+    </div>
   </section>
 
 </div>
